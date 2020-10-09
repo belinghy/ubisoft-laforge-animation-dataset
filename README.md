@@ -93,6 +93,22 @@ To validate that the results produced by the baseline evaluations are within the
 
 `python evaluate_test.py`
 
+### Rendering
+
+First extract the .bvh files from `lafan1.zip`.  The files should already be extracted to `output/BVH/` after running the two commands above.
+
+This command will convert BVH format to joint coordinates in global space:
+
+`python parse_bvh.py --files output/BVH/*_subject1.bvh --output mocap_subject1`
+
+The output is a 3D numpy array with shape `(frames, joints, xyz)` with all the mocap clips concatenated.  The last parameter specifies where to save the numpy array.
+
+To render the mocap clips:
+
+`python play_mocap.py --files mocap_subject1.npy --num 16`
+
+All requirement packages can be installed with `pip`, including `bvh`, `gym`, `matplotlib`, `pybullet`, and `torch`.
+
 ---
 
 The first run may take several minutes, as it will compute the training statistics.  
