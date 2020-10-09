@@ -10,7 +10,7 @@ def play_mocap(args):
 
     env_options = {
         "env_id": "environments:MocapReplayEnv-v0",
-        "num_parallel": 1,
+        "num_parallel": args.num,
         "mocap_data": mocap_data,
     }
 
@@ -45,6 +45,7 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--files", type=str, nargs="+", required=True)
+    parser.add_argument("--num", type=int, default=1)
     parser.add_argument("--len", type=int, default=float("inf"))
     parser.add_argument("--render", type=int, default=1)
     parser.add_argument("--save", type=int, default=0)

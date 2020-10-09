@@ -33,8 +33,8 @@ class EnvBase(gym.Env):
     def create_viewer(
         self,
         data_fps=30,
-        use_params=False,
-        camera_tracking=True,
+        use_params=True,
+        camera_tracking=False,
     ):
         from common.bullet_utils import MocapViewer
 

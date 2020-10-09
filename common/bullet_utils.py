@@ -18,6 +18,10 @@ import torch.nn.functional as F
 from common.bullet_objects import VSphere, VCapsule
 
 
+DEG2RAD = np.pi / 180
+RAD2DEG = 180 / np.pi
+
+
 class BulletClient(object):
     """A wrapper for pybullet to manage different clients."""
 
@@ -252,15 +256,10 @@ class MocapViewer:
         num_characters=1,
         target_fps=30,
         use_params=True,
-        camera_tracking=True,
+        camera_tracking=False,
+        render_character_links=False,
         device="cpu",
     ):
-        indices = torch.arange(0, 69).long()
-        self.x_indices = indices[slice(3, 69, 3)]
-        self.y_indices = indices[slice(4, 69, 3)]
-        self.z_indices = indices[slice(5, 69, 3)]
-        self.joint_indices = (self.x_indices, self.y_indices, self.z_indices)
-
         self.env = env
         self.num_characters = num_characters
         self.use_params = use_params
@@ -311,7 +310,9 @@ class MocapViewer:
 
         # here order is important for some reason ?
         # self.targets = MultiTargets(self._p, num_characters, self.colours)
-        self.characters = MultiMocapCharacters(self._p, num_characters, self.colours)
+        self.characters = MultiMocapCharacters(
+            self._p, num_characters, self.colours, render_character_links
+        )
 
         # Re-enable rendering
         pVisualizer(pybullet.COV_ENABLE_RENDERING, 1)
@@ -347,9 +348,9 @@ class MocapViewer:
         self.characters = MultiMocapCharacters(bc, num_characters, colours)
         bc.configureDebugVisualizer(pybullet.COV_ENABLE_RENDERING, 1)
 
-    def render(self, frames, facings, root_xzs):
+    def render(self, joint_coordinates, facings, root_xzs):
 
-        # x, y, z = extract_joints_xyz(frames, *self.joint_indices, dim=1)
+        # x, y, z = extract_joints_xyz(joint_coordinates, *self.joint_indices, dim=1)
         # mat = self.env.get_rotation_matrix(facings).to(self.device)
         # rotated_xy = torch.matmul(mat, torch.stack((x, y), dim=1))
         # poses = torch.cat((rotated_xy, z.unsqueeze(dim=1)), dim=1).permute(0, 2, 1)
@@ -361,25 +362,28 @@ class MocapViewer:
         # )
         # self.joint_xyzs = joint_xyzs
 
-        self._p.configureDebugVisualizer(self._p.COV_ENABLE_SINGLE_STEP_RENDERING, 1)
-        for index in range(self.num_characters):
-            self.characters.set_joint_positions(frames[index], index)
+        coordinates = joint_coordinates.cpu().numpy()
 
-        # self._handle_mouse_press()
-        # self._handle_key_press()
-        # if self.use_params:
-        #     self._handle_parameter_update()
-        # if self.camera_tracking:
-        #     self.camera.track(self.root_xyzs[self.character_index], self.camera_smooth)
-        # else:
-        #     self.camera.wait()
+        for index in range(self.num_characters):
+            self.characters.set_joint_positions(coordinates[index], index)
+
+        self._handle_mouse_press()
+        self._handle_key_press()
+        self._handle_parameter_update()
+        if self.camera_tracking:
+            character_root = coordinates[self.character_index, 0]
+            self.camera.track(character_root, np.ones(3))
+        else:
+            self.camera.wait()
+
+        self._p.configureDebugVisualizer(self._p.COV_ENABLE_SINGLE_STEP_RENDERING, 1)
 
     def close(self):
         self._p.disconnect()
         sys.exit(0)
 
     def _setup_debug_parameters(self):
-        max_frame = self.env.mocap_data.shape[0] - self.env.num_condition_frames
+        max_frame = self.env.mocap_data.shape[0]
         self.parameters = [
             {
                 # -1 for random start frame
@@ -393,7 +397,7 @@ class MocapViewer:
                 "default": self.env.data_fps,
                 "args": ("Target FPS", 1, 240, self.env.data_fps),
                 "dest": (self.camera, "_target_period"),
-                "func": lambda x: 1 / (x + 1),
+                "func": lambda x: 1 / x,
             },
             {
                 "default": 1,
@@ -424,6 +428,9 @@ class MocapViewer:
             param["id"] = self._p.addUserDebugParameter(*param["args"])
 
     def _handle_parameter_update(self):
+        if not self.use_params:
+            return
+
         for param in self.parameters:
             func = param["func"]
             value = func(self._p.readUserDebugParameter(param["id"]))
@@ -465,22 +472,6 @@ class MocapViewer:
                     (3, 3),
                 )
 
-                # Ry = np.array(
-                #     [
-                #         [1, 0, 0],
-                #         [0, np.cos(pitch), -np.sin(pitch)],
-                #         [0, np.sin(pitch), np.cos(pitch)],
-                #     ]
-                # )
-                # Rz = np.array(
-                #     [
-                #         [np.cos(yaw), -np.sin(yaw), 0],
-                #         [np.sin(yaw), np.cos(yaw), 0],
-                #         [0, 0, 1],
-                #     ]
-                # )
-                # R = np.matmul(Rz, Ry)
-
                 # Can't use the ones returned by pybullet API, because they are wrong
                 camera_up = np.matmul(R, [0, 0, 1])
                 camera_forward = np.matmul(R, [0, 1, 0])
@@ -504,15 +495,12 @@ class MocapViewer:
                     - (y - 0.5) * 2 * camera_up
                 )
 
-                C = (
-                    np.array(
-                        [
-                            (B[2] * A[0] - A[2] * B[0]) / (B[2] - A[2]),
-                            (B[2] * A[1] - A[2] * B[1]) / (B[2] - A[2]),
-                            0,
-                        ]
-                    )
-                    / FOOT2METER
+                C = np.array(
+                    [
+                        (B[2] * A[0] - A[2] * B[0]) / (B[2] - A[2]),
+                        (B[2] * A[1] - A[2] * B[1]) / (B[2] - A[2]),
+                        0,
+                    ]
                 )
 
                 if hasattr(self.env, "reset_target"):
@@ -563,7 +551,7 @@ class MocapViewer:
 
 
 class MultiMocapCharacters:
-    def __init__(self, bc, num_characters, colours=None, links=False):
+    def __init__(self, bc, num_characters, colours=None, render_links=True):
         self._p = bc
         self.num_joints = 22
         total_parts = num_characters * self.num_joints
@@ -573,25 +561,27 @@ class MultiMocapCharacters:
         # useMaximalCoordinates=True is faster for things that don't `move`
         joints = VSphere(bc, radius=0.07, max=True, replica=total_parts)
         self.ids = joints.ids
-        self.has_links = links
+        self.render_links = render_links
 
-        if links:
+        if render_links:
             self.linked_joints = np.array(
                 [
-                    [12, 0],  # right foot
-                    [16, 12],  # right shin
-                    [14, 16],  # right leg
-                    [15, 17],  # left foot
-                    [17, 13],  # left shin
-                    [13, 1],  # left leg
-                    [5, 7],  # right shoulder
-                    [7, 10],  # right upper arm
-                    [10, 20],  # right lower arm
-                    [6, 8],  # left shoulder
-                    [8, 9],  # left upper arm
-                    [9, 21],  # left lower arm
-                    [3, 18],  # torso
-                    [14, 15],  # hip
+                    [3, 4],  # left foot
+                    [2, 3],  # left shin
+                    [1, 2],  # left leg
+                    [7, 8],  # right foot
+                    [6, 7],  # right shin
+                    [5, 6],  # right leg
+                    [9, 0],  # spine 1
+                    [10, 9],  # spine 2
+                    [11, 10],  # spine 3
+                    [12, 11],  # neck
+                    [14, 15],  # left shoulder
+                    [15, 16],  # left upper arm
+                    [16, 17],  # left lower arm
+                    [18, 19],  # right shoulder
+                    [19, 20],  # right upper arm
+                    [20, 21],  # right lower arm
                 ]
             )
 
@@ -605,14 +595,14 @@ class MultiMocapCharacters:
             self.z_axes = np.zeros((self.linked_joints.shape[0], 3))
             self.z_axes[:, 2] = 1
 
-            self.heads = [VSphere(bc, radius=0.12) for _ in range(num_characters)]
+            # self.heads = [VSphere(bc, radius=0.12) for _ in range(num_characters)]
 
         if colours is not None:
             self.colours = colours
             for index, colour in zip(range(num_characters), colours):
                 self.set_colour(colour, index)
-                if links:
-                    self.heads[index].set_color(colour)
+                # if render_links:
+                #     self.heads[index].set_color(colour)
 
     def set_colour(self, colour, index):
         # start = self.start_index + index * self.num_joints
@@ -629,7 +619,7 @@ class MultiMocapCharacters:
         for xyz, id in zip(xyzs, joint_ids):
             self._p.resetBasePositionAndOrientation(id, posObj=xyz, ornObj=(0, 0, 0, 1))
 
-        if self.has_links:
+        if self.render_links:
             rgba = self.colours[index].copy()
             rgba[-1] = 1.0
 
@@ -653,6 +643,6 @@ class MultiMocapCharacters:
 
                 link.set_position(pos, orn)
 
-            self.heads[index].set_position(0.5 * (xyzs[4] - xyzs[3]) + xyzs[4])
+            # self.heads[index].set_position(0.5 * (xyzs[13] - xyzs[12]) + xyzs[13])
 
         self._p.configureDebugVisualizer(pybullet.COV_ENABLE_RENDERING, 1)
